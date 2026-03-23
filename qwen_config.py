@@ -1,0 +1,13 @@
+'''
+qwen_llm 的 Docstring
+调用百炼平台的qwen
+'''
+ 
+from langchain_openai import ChatOpenAI
+import os
+llm = ChatOpenAI(
+    model="qwen3.5-plus",
+    base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+    api_key=os.getenv("api_key")
+)
+ 
