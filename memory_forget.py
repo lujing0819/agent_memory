@@ -4,7 +4,7 @@ def extract_abstract(messages):
     systemprompt=[msg for msg in messages if  isinstance(msg, SystemMessage)]
     initial_state =  messages + [HumanMessage(content="总结上述对话的摘要")]
     abstract= llm.invoke(initial_state)
-    print (abstract)
+    #print (abstract)
     return systemprompt+[abstract]
     
 def forget(messages):
@@ -13,7 +13,7 @@ def forget(messages):
     '''
     messages=[msg for msg in messages if not isinstance(msg, ToolMessage)]
     messages=[msg for msg in messages if len(msg.content.strip())>0]
-    if len(messages)>2:
+    if len(messages)>20:
         print ("开始提取摘要")
         messages=extract_abstract(messages)
     return messages

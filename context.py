@@ -251,7 +251,7 @@ class MemoryContext(Context):
         with open(self.tmp_file, "a", encoding="utf-8") as f:
             f.writelines("\n".join(results) + "\n")
         self.executor.submit(self.my_write)
-  
+ 
 
 class ToolContext(Context):
     """工具调用上下文，记录工具调用历史。"""
@@ -303,7 +303,7 @@ class ToolContext(Context):
 
     def write(self, msgs, **kwargs) -> None:
  
-        content=[message_to_role_content(s)['content'] for s in msgs if str(type(s)) == "<class 'langchain_core.messages.tool.ToolMessage'>"]
+        content=[message_to_role_content(msg)['content'] for msg in msgs if isinstance(msg, ToolMessage)]
         if len(content)==0:
             return 
         query=msgs[0].content
@@ -331,13 +331,14 @@ class ProfileContext(Context):
         self.profile_dir = self._get_subdir("profile")
         self.name="profile"
  
-    def read(self, *args,**kwargs) -> Any:
+    def read(self,*args,**kwargs) -> Any:
         """
         读取当前用户的画像信息。
         该方法获取最新的画像文件，
         读取其全部内容，并封装为 LangChain 的 HumanMessage 对象返回。
         画像文件通常为文本格式，记录了用户的偏好、背景、行为模式等结构化或非结构化信息，
         可用于在对话中注入个性化上下文。
+        
         """
         latest = self._get_latest_file(self.profile_dir)
         with open(latest, "r", encoding="utf-8") as f:
@@ -377,6 +378,26 @@ class ProfileContext(Context):
         self.executor.submit(self.my_write)
 
 
+class DocumentContext(Context):
+    """用户画像上下文，存储用户属性信息。"""
+    
+    def __init__(self, userid: str, agentid: str):
+        super().__init__(userid, agentid)
+        persist_directory =str(self._get_subdir("documents")/ "vector_db")
+        embeddings = DashScopeEmbeddings(model="text-embedding-v3")
+        self.vector_db = Chroma(persist_directory=persist_directory,embedding_function=embeddings)
+    def read(self, query,**kwargs) -> Any:
+        """
+        从用户的个人知识库中进行检索，提取和用户问题相关的知识
+        Args:
+            query (str): 用于相似性搜索的查询字符串，通常为当前用户输入或需要匹配的关键信息。
+        """
+        result=self.vector_db.search(query,search_type="similarity")
+        print ("aaa",result)
+        return result
+    def write(self, messages, **kwargs) -> None: 
+        return 
+
 
 
 # ========== 可选的管理类，用于统一获取上下文实例 ==========
@@ -406,5 +427,9 @@ class ContextManager:
         if key not in self._contexts:
             self._contexts[key] = context_class(userid, agentid)
         return self._contexts[key]
-
- 
+if __name__ == "__main__":
+    agent_id="agent_001"
+    user_id="user_123"
+    ctx=DocumentContext("user_123","agent_001")
+    result=ctx.read("小孩有些多动")
+    print (result)
