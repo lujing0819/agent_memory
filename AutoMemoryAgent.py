@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from context import ContextList
+from safe import guard
 class AutoMemoryAgent:
     """
     自动管理记忆的智能体包装器。
@@ -25,23 +26,35 @@ class AutoMemoryAgent:
         self.forget_func = forget_func
         # 初始化消息列表（包含系统提示）
         self.messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
-        self.prev_msg_count = 1  # 上一次存储后消息的数量
+        self.prev_msg_count = 1,  # 上一次存储后消息的数量，
+        #模型防护
+        self.guard =guard
 
     def invoke(self, user_input: str) -> str:
         """
         接收用户输入，返回智能体回复，并自动处理存储与遗忘。
         """
         # 构造用户消息
-
+        safe, reason=self.guard.check(user_input)
+        print (safe,reason)
+        asd
+        if not safe:
+            return f"输入不安全:{reason}"
       
         self.messages = self.forget_func(self.messages)
         user_msg = HumanMessage(content=user_input)
+        
         # 构建当前状态（包含历史消息）
         current_state = {"messages": self.messages + [user_msg]}
         # 调用原始 agent
         final_state = self.agent.invoke(current_state)
         # 更新历史消息（含本次交互产生的全部消息）
         self.messages = final_state["messages"]
+
+        safe, reason=self.guard.check(self.messages[-1].content)
+        if not safe:
+            return f"输出不安全:{reason}"
+
         # 获取本次新增的消息（即上次存储后到现在的所有新消息）
         new_messages = self.messages[self.prev_msg_count:]
         # 存储新消息（假设 ctx_list.write 接受 BaseMessage 列表）

@@ -10,4 +10,9 @@ llm = ChatOpenAI(
     base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
     api_key=os.getenv("api_key"),
 )
- 
+safe_llm = ChatOpenAI(
+    model="qwen3.5-35b-a3b",
+    base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+    api_key=os.getenv("api_key"),
+    cache=True
+)

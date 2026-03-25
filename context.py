@@ -18,6 +18,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.documents import Document
 from langchain.tools import tool
 from concurrent.futures import ThreadPoolExecutor
+from reranker import text_rerank
 os.environ["DASHSCOPE_API_KEY"]=os.getenv("api_key")
 class Context(ABC):
     """上下文抽象基类，所有具体上下文必须实现读写方法。"""
@@ -388,13 +389,15 @@ class DocumentContext(Context):
         self.vector_db = Chroma(persist_directory=persist_directory,embedding_function=embeddings)
     def read(self, query,**kwargs) -> Any:
         """
-        从用户的个人知识库中进行检索，提取和用户问题相关的知识
+        从用户的个人知识库中检索与查询最相关的信息。
+        当问到专业知识，个人知识时，调用
         Args:
             query (str): 用于相似性搜索的查询字符串，通常为当前用户输入或需要匹配的关键信息。
         """
-        result=self.vector_db.search(query,search_type="similarity")
-        print ("aaa",result)
-        return result
+        docs=self.vector_db.search(query,search_type="similarity",k=5)
+        docs=[s.metadata["content"] for s in docs]
+        results=text_rerank(query,docs,threshold=0.75)
+        return results
     def write(self, messages, **kwargs) -> None: 
         return 
 
@@ -416,7 +419,8 @@ class ContextManager:
             "history": HistoryContext,
             "memory": MemoryContext,
             "tool": ToolContext,
-            "profile": ProfileContext
+            "profile": ProfileContext,
+            "document":DocumentContext
         }.get(context_type.lower())
         
         if not context_class:

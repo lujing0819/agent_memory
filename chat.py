@@ -12,6 +12,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import Tool,tool
 from context import ContextList
+
 os.environ["TAVILY_API_KEY"] = "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"
  
 
@@ -25,7 +26,7 @@ tools = [TavilySearch(max_results=2)]
 
 user_id="user_123"
 agent_id="agent_001"
-ctx_List=ContextList(["history","memory","tool","profile"],agent_id,user_id)
+ctx_List=ContextList(["history","memory","tool","profile","document"],agent_id,user_id)
 for ctx in ctx_List.ctx_list:
     read_tool=tool(ctx.read)
     tools.append(read_tool)
