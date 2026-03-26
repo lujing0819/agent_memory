@@ -11,7 +11,7 @@ import json
 from collections import deque
 from mem0 import Memory
 from utils import message_to_role_content,role_content_to_message
-from qwen_config import llm
+from qwen_config import llm,mini_llm
 from langchain_core.messages import AIMessage, HumanMessage,ToolMessage
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import DashScopeEmbeddings
@@ -77,21 +77,14 @@ class Context(ABC):
         若 max_lines 为 None，读取全部行；否则只读取最后 max_lines 行（保持原顺序）。
         """
         lines = []
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                if max_lines is None:
-                    lines = [line.rstrip("\n") for line in f if line.strip()]
-                else:
-                    dq = deque(maxlen=max_lines)
-                    for line in f:
-                        line = line.rstrip("\n")
-                        if line:
-                            dq.append(line)
-                    lines = list(dq)
-        except Exception as e:
-            # 可根据需要记录日志或忽略
-            pass
-        return lines
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = [line.rstrip("\n") for  line in f.readlines()]
+        if max_lines is None or max_lines>len(lines):
+            return lines
+        else:
+            return  lines[-max_lines:]
+ 
 
 
     @abstractmethod
@@ -125,7 +118,7 @@ class HistoryContext(Context):
         self.maxlen = maxlen
         self.history_dir = self._get_subdir("history")
         self.name="history"
-    def read(self, limit= 2, **kwargs) -> List[Dict[str, str]]:
+    def read(self,query ,limit=20, **kwargs) -> List[Dict[str, str]]:
         """
         读取最近的对话历史消息。
 
@@ -140,22 +133,27 @@ class HistoryContext(Context):
                 每轮对话通常包含两条消息（用户输入和助手回复）。默认值为 2。
             **kwargs: 预留扩展参数，当前未使用。
         """
+        print ("读取历史记忆")
         files = [f for f in self.history_dir.iterdir() if f.is_file()]
         files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
         messages = []
-        remaining = limit
         for file_path in files:
             # 读取当前文件最后 remaining 行（文件内升序）
-            lines = self._read_lines_from_file(file_path, max_lines=remaining)
+            lines = self._read_lines_from_file(file_path, max_lines=2*limit)
             if not lines:
                 continue
             msgs = [eval(line) for line in lines]
-            for msg in reversed(msgs):
-                for s in reversed(msg):
-                    messages=[role_content_to_message(json.loads(s))]+messages
-                    if len(messages)/2>=limit:
-                        return messages
-        return messages
+            msgs=[ss for s in msgs for ss in s]
+            messages=msgs+messages
+            if len(messages)/2>=limit:
+                break
+        messages=[ json.loads(s) for s in set(messages)]  
+        messages=[s for s in messages if len(s['content'])>2 and s['role']!='system']     
+        messages=sorted(messages,key=lambda s:s['time'],reverse=True)[0:2*limit]
+        messages=text_rerank(query,messages,key='content',threshold=0.1)
+        t=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        result=mini_llm.invoke(f"{messages} 现在的时间是{t}根据上面聊天记录，总结成摘要").content
+        return result
 
 
 
@@ -230,8 +228,10 @@ class MemoryContext(Context):
             limit (int, optional): 最大返回的记忆条目数量。默认值为 10，表示最多返回 10 条相关记忆。
             **kwargs: 预留扩展参数，可传递给底层记忆搜索方法（例如过滤条件、元数据要求等）。
         """
-        memory_results= self.memory.search(query=query, user_id=self.userid, limit=limit)["results"]
-        return [ HumanMessage(content=s['memory']) for s in memory_results]
+        print ("读取mem0记忆")
+        memory_results= self.memory.search(query=query, user_id="123", limit=limit)["results"]
+        memory_results=[s['memory'] for s in memory_results if s["score"]<0.7]
+        return f"过去的相关记忆是{str(memory_results)}"
     def my_write(self,limit=3) -> None:
         def count_lines(filename):
             """返回文件的行数"""
@@ -280,12 +280,13 @@ class ToolContext(Context):
                 注意：当前实现固定返回 k=5 条，该参数暂未使用。保留此参数是为了接口兼容性。
             **kwargs: 预留扩展参数，可传递给向量数据库搜索方法（如过滤条件、搜索类型覆盖等）。
         """
+        print ("读取工具记忆")
         docs=self.vector_db.search(query, search_type="similarity", k=5)
         results=[]
-        for doc in docs:
-            msg=ToolMessage(content=doc.metadata['output']+f"工具调用时间{doc.metadata['time']}",query=doc.page_content,tool_call_id="unknown")
+        for i,doc in enumerate(docs):
+            msg=json.dumps({"id":i,"工具输出":doc.metadata['output']+f"工具调用时间{doc.metadata['time']}","工具输入":doc.page_content},ensure_ascii=False)
             results.append(msg)
-        return results      
+        return str(results)      
 
     def my_write(self,limit=3) -> None:
         def count_lines(filename):
@@ -341,10 +342,11 @@ class ProfileContext(Context):
         可用于在对话中注入个性化上下文。
         
         """
+        print ("读取用户画像")
         latest = self._get_latest_file(self.profile_dir)
         with open(latest, "r", encoding="utf-8") as f:
             profile = f.read()
-        return HumanMessage(content=profile)
+        return profile.strip()
     
     def my_write(self,limit=5) -> None:
         def count_lines(filename):
@@ -394,10 +396,11 @@ class DocumentContext(Context):
         Args:
             query (str): 用于相似性搜索的查询字符串，通常为当前用户输入或需要匹配的关键信息。
         """
+        print ("读取个人知识库")
         docs=self.vector_db.search(query,search_type="similarity",k=5)
         docs=[s.metadata["content"] for s in docs]
         results=text_rerank(query,docs,threshold=0.75)
-        return results
+        return str(results)
     def write(self, messages, **kwargs) -> None: 
         return 
 

@@ -2,17 +2,23 @@ import dashscope
 from http import HTTPStatus
 import os
 #os.environ["DASHSCOPE_API_KEY"]=os.getenv("api_key")
-def text_rerank(query,documents,threshold=0.75):
+def text_rerank(query,documents,key=None,threshold=0.75):
     dashscope.api_key = os.getenv("api_key")
+    if key is None:
+        docs=documents
+    else:
+        docs=[s[key] for s in documents]
+ 
     resp = dashscope.TextReRank.call(
         model="qwen3-rerank",
         query=query,
-        documents=documents,
+        documents=docs,
         top_n=10,
-        return_documents=True,
+        return_documents=False,
         instruct="Given a web search query, retrieve relevant passages that answer the query."
 
     )
+ 
     indexs=[ s.index for s in resp['output']["results"] if s.relevance_score>threshold]
     results=[ documents[i] for i in indexs]
     return results

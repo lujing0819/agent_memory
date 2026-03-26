@@ -17,12 +17,12 @@ class AutoMemoryAgent:
     def __init__(
         self,
         agent: Runnable,
-        ctx_list: "ContextList",  # 假设的上下文列表类型
+        context: ContextList,  # 假设的上下文列表类型
         forget_func: Callable[[List[BaseMessage]], List[BaseMessage]],
         system_prompt: str = "",
     ):
         self.agent = agent
-        self.ctx_list = ctx_list
+        self.context = context
         self.forget_func = forget_func
         # 初始化消息列表（包含系统提示）
         self.messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
@@ -34,31 +34,36 @@ class AutoMemoryAgent:
         """
         接收用户输入，返回智能体回复，并自动处理存储与遗忘。
         """
-        # 构造用户消息
-        safe, reason=self.guard.check(user_input)
-        print (safe,reason)
-        asd
-        if not safe:
-            return f"输入不安全:{reason}"
+        #安全护栏
+        # safe, reason=self.guard.check(user_input)
+        # if not safe:
+        #     return f"输入不安全:{reason}"
       
         self.messages = self.forget_func(self.messages)
         user_msg = HumanMessage(content=user_input)
-        
+        #memory=self.memory_agent.invoke(user_msg)
+   
+        #memory=[ ctx.read(user_input) for ctx in self.context.ctx_list]
+        for ctx in self.context.ctx_list:
+            print (ctx.read(user_input))
+            print ("-"*10)
+            print ("\n\n")
         # 构建当前状态（包含历史消息）
         current_state = {"messages": self.messages + [user_msg]}
         # 调用原始 agent
         final_state = self.agent.invoke(current_state)
+        print (final_state)
         # 更新历史消息（含本次交互产生的全部消息）
         self.messages = final_state["messages"]
 
-        safe, reason=self.guard.check(self.messages[-1].content)
-        if not safe:
-            return f"输出不安全:{reason}"
+        # safe, reason=self.guard.check(self.messages[-1].content)
+        # if not safe:
+        #     return f"输出不安全:{reason}"
 
         # 获取本次新增的消息（即上次存储后到现在的所有新消息）
         new_messages = self.messages[self.prev_msg_count:]
         # 存储新消息（假设 ctx_list.write 接受 BaseMessage 列表）
-        self.ctx_list.write(new_messages)
+        self.context.write(new_messages)
 
         # 更新下次的起始计数（基于修剪后的消息列表长度）
         self.prev_msg_count = len(self.messages)
@@ -66,17 +71,18 @@ class AutoMemoryAgent:
         return self.messages[-1].content
 def create_memory_agent(user_id,agent_id,system_prompt,function_tools,memory_plugin):
     
-    ctx_List=ContextList(memory_plugin,agent_id,user_id)
-    tools=function_tools+[tool(ctx.read) for ctx in ctx_List.ctx_list]
+    context=ContextList(memory_plugin,agent_id,user_id)
+    
     agent = create_agent(
         model=llm,
-        tools=tools,
+        tools=function_tools,
         system_prompt=""
     )
+ 
     # 包装为自动记忆智能体
     auto_agent = AutoMemoryAgent(
         agent=agent,
-        ctx_list=ctx_List,
+        context=context,
         forget_func=forget,   # 假设已有 forget 函数
         system_prompt=system_prompt
     )
