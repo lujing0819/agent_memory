@@ -14,7 +14,7 @@ from utils import message_to_role_content,role_content_to_message
 from qwen_config import llm,mini_llm
 from langchain_core.messages import AIMessage, HumanMessage,ToolMessage
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import DashScopeEmbeddings
+from qwen_config import embedding_model
 from langchain_core.documents import Document
 from langchain.tools import tool
 from concurrent.futures import ThreadPoolExecutor
@@ -118,6 +118,9 @@ class HistoryContext(Context):
         self.maxlen = maxlen
         self.history_dir = self._get_subdir("history")
         self.name="history"
+        self.tmp_file =self._get_subdir("history")/ "tmp.txt"
+        self.vector_db = Chroma(persist_directory=str(self.history_dir/"db") ,embedding_function=embedding_model)
+        self.executor = ThreadPoolExecutor(max_workers=8)
     def read(self,query ,limit=20, **kwargs) -> List[Dict[str, str]]:
         """
         读取最近的对话历史消息。
@@ -134,27 +137,22 @@ class HistoryContext(Context):
             **kwargs: 预留扩展参数，当前未使用。
         """
         print ("读取历史记忆")
-        files = [f for f in self.history_dir.iterdir() if f.is_file()]
-        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        messages = []
-        for file_path in files:
-            # 读取当前文件最后 remaining 行（文件内升序）
-            lines = self._read_lines_from_file(file_path, max_lines=2*limit)
-            if not lines:
-                continue
-            msgs = [eval(line) for line in lines]
-            msgs=[ss for s in msgs for ss in s]
-            messages=msgs+messages
-            if len(messages)/2>=limit:
-                break
-        messages=[ json.loads(s) for s in set(messages)]  
-        messages=[s for s in messages if len(s['content'])>2 and s['role']!='system']     
-        messages=sorted(messages,key=lambda s:s['time'],reverse=True)[0:2*limit]
-        messages=text_rerank(query,messages,key='content',threshold=0.1)
-        t=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        result=mini_llm.invoke(f"{messages} 现在的时间是{t}根据上面聊天记录，总结成摘要").content
-        return result
-
+        docs=self.vector_db.search(query, search_type="similarity", k=5)
+        print (docs)
+    def my_write(self,limit=1) -> None:
+        def count_lines(filename):
+            """返回文件的行数"""
+            with open(filename, 'r', encoding='utf-8') as f:
+                return sum(1 for _ in f)
+        if count_lines(self.tmp_file) >= limit:   
+            with open(self.tmp_file, "r", encoding="utf-8") as f:
+                lines=f.readlines()
+                lines=[json.loads(line.strip()) for line in lines if line.strip() and len(line.strip())>0]
+            docs = [Document(page_content=data['page_content'],metadata=data['metadata']) for data in lines]
+            self.vector_db.add_documents(docs)
+            self.vector_db.persist()
+            # 清空临时文件
+            open(self.tmp_file, "w", encoding="utf-8").close()
 
 
     def write(self, messages, **kwargs) -> None:
@@ -162,15 +160,16 @@ class HistoryContext(Context):
         写入一条消息，格式如 {"role": "user", "content": "..."}。
         若超过最大长度，自动移除最早的消息。
         """
-        latest = self._get_latest_file(self.history_dir)
-        if latest and self._is_within_last_hour(latest):
-            target_file = latest
-        else:
-            target_file = self._new_file_path(self.history_dir, prefix="history")
+  
         results=[ message_to_role_content(s) for s in messages]
-        results=[ json.dumps(s, ensure_ascii=False) for s in results]
-        with open(target_file, "a", encoding="utf-8") as f:
-            f.writelines( str(results)+"\n")
+       
+        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for result in results:
+            data={"page_content":result["content"],"metadata":{"output":result["content"],"time":time}}
+            with open(self.tmp_file, "a", encoding="utf-8") as f:
+                f.writelines(json.dumps(data,ensure_ascii=False) + "\n")
+        self.executor.submit(self.my_write)
+ 
 
 class MemoryContext(Context):
     """记忆上下文，存储键值对形式的长期记忆。"""
@@ -261,7 +260,7 @@ class ToolContext(Context):
         super().__init__(userid, agentid)
         self._calls: List[Dict[str, Any]] = []
         self.tool_dir = self._get_subdir("tool")
-        embedding_model = DashScopeEmbeddings(model="text-embedding-v3")
+        
         self.vector_db = Chroma(persist_directory=str(self.tool_dir/"db") ,embedding_function=embedding_model)
         self.name="tool"
         self.tmp_file =self._get_subdir("tool")/ "tmp.txt"
@@ -387,8 +386,7 @@ class DocumentContext(Context):
     def __init__(self, userid: str, agentid: str):
         super().__init__(userid, agentid)
         persist_directory =str(self._get_subdir("documents")/ "vector_db")
-        embeddings = DashScopeEmbeddings(model="text-embedding-v3")
-        self.vector_db = Chroma(persist_directory=persist_directory,embedding_function=embeddings)
+        self.vector_db = Chroma(persist_directory=persist_directory,embedding_function=embedding_model)
     def read(self, query,**kwargs) -> Any:
         """
         从用户的个人知识库中检索与查询最相关的信息。

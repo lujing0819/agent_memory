@@ -8,7 +8,8 @@ import os
 
 os.environ["TAVILY_API_KEY"] = "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"
 # 创建原始智能体（与之前相同）
-memory_plugin=["history","memory","tool","profile"]
+#memory_plugin=["history","memory","tool","profile"]
+memory_plugin=["history","memory","profile"]
 
  
 agent_id="agent_001"

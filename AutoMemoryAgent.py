@@ -26,7 +26,8 @@ class AutoMemoryAgent:
         self.forget_func = forget_func
         # 初始化消息列表（包含系统提示）
         self.messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
-        self.prev_msg_count = 1,  # 上一次存储后消息的数量，
+        self.prev_msg_count = 1   # 上一次存储后消息的数量，
+
         #模型防护
         self.guard =guard
 
@@ -48,6 +49,8 @@ class AutoMemoryAgent:
             print (ctx.read(user_input))
             print ("-"*10)
             print ("\n\n")
+
+
         # 构建当前状态（包含历史消息）
         current_state = {"messages": self.messages + [user_msg]}
         # 调用原始 agent
@@ -61,6 +64,8 @@ class AutoMemoryAgent:
         #     return f"输出不安全:{reason}"
 
         # 获取本次新增的消息（即上次存储后到现在的所有新消息）
+        print (self.messages)
+        print (self.prev_msg_count)
         new_messages = self.messages[self.prev_msg_count:]
         # 存储新消息（假设 ctx_list.write 接受 BaseMessage 列表）
         self.context.write(new_messages)
