@@ -18,7 +18,6 @@ def text_rerank(query,documents,key=None,threshold=0.75):
         instruct="Given a web search query, retrieve relevant passages that answer the query."
 
     )
- 
     indexs=[ s.index for s in resp['output']["results"] if s.relevance_score>threshold]
     results=[ documents[i] for i in indexs]
     return results

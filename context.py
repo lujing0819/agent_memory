@@ -19,6 +19,8 @@ from langchain_core.documents import Document
 from langchain.tools import tool
 from concurrent.futures import ThreadPoolExecutor
 from reranker import text_rerank
+from threading import Thread
+import asyncio
 os.environ["DASHSCOPE_API_KEY"]=os.getenv("api_key")
 class Context(ABC):
     """上下文抽象基类，所有具体上下文必须实现读写方法。"""
@@ -120,7 +122,6 @@ class HistoryContext(Context):
         self.name="history"
         self.tmp_file =self._get_subdir("history")/ "tmp.txt"
         self.vector_db = Chroma(persist_directory=str(self.history_dir/"db") ,embedding_function=embedding_model)
-        self.executor = ThreadPoolExecutor(max_workers=8)
     def read(self,query ,limit=20, **kwargs) -> List[Dict[str, str]]:
         """
         读取最近的对话历史消息。
@@ -136,39 +137,37 @@ class HistoryContext(Context):
                 每轮对话通常包含两条消息（用户输入和助手回复）。默认值为 2。
             **kwargs: 预留扩展参数，当前未使用。
         """
-        print ("读取历史记忆")
-        docs=self.vector_db.search(query, search_type="similarity", k=5)
-        print (docs)
-    def my_write(self,limit=1) -> None:
-        def count_lines(filename):
-            """返回文件的行数"""
-            with open(filename, 'r', encoding='utf-8') as f:
-                return sum(1 for _ in f)
-        if count_lines(self.tmp_file) >= limit:   
-            with open(self.tmp_file, "r", encoding="utf-8") as f:
-                lines=f.readlines()
-                lines=[json.loads(line.strip()) for line in lines if line.strip() and len(line.strip())>0]
-            docs = [Document(page_content=data['page_content'],metadata=data['metadata']) for data in lines]
-            self.vector_db.add_documents(docs)
-            self.vector_db.persist()
-            # 清空临时文件
-            open(self.tmp_file, "w", encoding="utf-8").close()
-
+        #print ("读取历史记忆")
+        docs=self.vector_db.search(query, search_type="similarity", k=10)
+        if len(docs)>0:
+            docs=[s.metadata for s in docs]
+            docs=[s for s in docs if len(s['output'])>0]
+            results=text_rerank(query,docs,key='output',threshold=0.6)
+            return "历史对话信息是："+str(results)
+        return ""
 
     def write(self, messages, **kwargs) -> None:
         """
         写入一条消息，格式如 {"role": "user", "content": "..."}。
         若超过最大长度，自动移除最早的消息。
-        """
-  
-        results=[ message_to_role_content(s) for s in messages]
-       
+        """ 
+        async def task():
+            try:
+                self.vector_db.add_documents(docs)
+                self.vector_db.persist()
+                #print ("添加记忆成功")
+            except Exception as e:
+                print(f"添加记忆失败: {e}")
+        results=[ message_to_role_content(s) for s in messages]    
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for result in results:
-            data={"page_content":result["content"],"metadata":{"output":result["content"],"time":time}}
-            with open(self.tmp_file, "a", encoding="utf-8") as f:
-                f.writelines(json.dumps(data,ensure_ascii=False) + "\n")
-        self.executor.submit(self.my_write)
+        docs=[]
+        for data in results:
+            doc =Document(page_content=data["content"],metadata={"output":data["content"],"time":time,"role":data['role']}) 
+            docs.append(doc)
+        if len(docs)>0:
+            asyncio.run(task())
+
+
  
 
 class MemoryContext(Context):
@@ -212,7 +211,7 @@ class MemoryContext(Context):
         self.memory=  Memory.from_config(config)
         self.tmp_file =self._get_subdir("memory")/ "tmp.txt"
         
-        self.executor = ThreadPoolExecutor(max_workers=8) 
+      
  
     def read(self, query,limit=10, **kwargs) -> Any:
         """
@@ -227,30 +226,25 @@ class MemoryContext(Context):
             limit (int, optional): 最大返回的记忆条目数量。默认值为 10，表示最多返回 10 条相关记忆。
             **kwargs: 预留扩展参数，可传递给底层记忆搜索方法（例如过滤条件、元数据要求等）。
         """
-        print ("读取mem0记忆")
-        memory_results= self.memory.search(query=query, user_id="123", limit=limit)["results"]
+        #print ("读取mem0记忆")
+        memory_results= self.memory.search(query=query, user_id=self.userid, limit=limit)["results"]
         memory_results=[s['memory'] for s in memory_results if s["score"]<0.7]
         return f"过去的相关记忆是{str(memory_results)}"
-    def my_write(self,limit=3) -> None:
-        def count_lines(filename):
-            """返回文件的行数"""
-            with open(filename, 'r', encoding='utf-8') as f:
-                return sum(1 for _ in f)
-        if count_lines(self.tmp_file) >= limit:   
-            with open(self.tmp_file, "r", encoding="utf-8") as f:
-                lines=f.readlines()
-                lines=[eval(line.strip()) for line in lines if line.strip() and len(line.strip())>0]
-                self.memory.add(messages=lines, user_id=self.userid)
-            # 清空临时文件
-            open(self.tmp_file, "w", encoding="utf-8").close()
-
+    
     def write(self, messages, **kwargs) -> None: 
         """写入或更新一个键值对。"""
-        results=[ message_to_role_content(s) for s in messages]
-        results=[json.dumps(s, ensure_ascii=False) for s in results]
-        with open(self.tmp_file, "a", encoding="utf-8") as f:
-            f.writelines("\n".join(results) + "\n")
-        self.executor.submit(self.my_write)
+        #print ("写入memory记忆")
+        
+        async def task():
+            try:
+                self.memory.add(messages=messages, user_id=self.user_id)
+                #print ("添加记忆成功")
+            except Exception as e:
+                print(f"添加记忆失败: {e}")
+        messages=[ message_to_role_content(s) for s in messages]
+        asyncio.run(task())
+  
+ 
  
 
 class ToolContext(Context):
@@ -264,7 +258,6 @@ class ToolContext(Context):
         self.vector_db = Chroma(persist_directory=str(self.tool_dir/"db") ,embedding_function=embedding_model)
         self.name="tool"
         self.tmp_file =self._get_subdir("tool")/ "tmp.txt"
-        self.executor = ThreadPoolExecutor(max_workers=8) 
     def read(self, query) -> Any:
         """
         读取与查询语义相似的工具调用历史记录。
@@ -279,44 +272,36 @@ class ToolContext(Context):
                 注意：当前实现固定返回 k=5 条，该参数暂未使用。保留此参数是为了接口兼容性。
             **kwargs: 预留扩展参数，可传递给向量数据库搜索方法（如过滤条件、搜索类型覆盖等）。
         """
-        print ("读取工具记忆")
+        #print ("读取工具记忆")
         docs=self.vector_db.search(query, search_type="similarity", k=5)
-        results=[]
+        docs=[s.metadata for s in docs]
+        docs=text_rerank(query,docs,key='output',threshold=0.6)
+        if len(docs)==0:
+            return ""
+        result="下面为工具调用的历史信息："
         for i,doc in enumerate(docs):
-            msg=json.dumps({"id":i,"工具输出":doc.metadata['output']+f"工具调用时间{doc.metadata['time']}","工具输入":doc.page_content},ensure_ascii=False)
-            results.append(msg)
-        return str(results)      
+            result+=json.dumps({"id":i,"工具输入":doc['query'],"工具输出":doc['output']+f"工具调用时间{doc['time']}"},ensure_ascii=False)
+        return result    
 
-    def my_write(self,limit=3) -> None:
-        def count_lines(filename):
-            """返回文件的行数"""
-            with open(filename, 'r', encoding='utf-8') as f:
-                return sum(1 for _ in f)
-        if count_lines(self.tmp_file) >= limit:   
-            with open(self.tmp_file, "r", encoding="utf-8") as f:
-                lines=f.readlines()
-                lines=[json.loads(line.strip()) for line in lines if line.strip() and len(line.strip())>0]
-            docs = [Document(page_content=data['page_content'],metadata=data['metadata']) for data in lines]
-            self.vector_db.add_documents(docs)
-            self.vector_db.persist()
-            # 清空临时文件
-            open(self.tmp_file, "w", encoding="utf-8").close()
+    
 
     def write(self, msgs, **kwargs) -> None:
- 
+        async def task():
+            try:
+                self.vector_db.add_documents(data)
+                self.vector_db.persist()
+                #print ("添加记忆成功")
+            except Exception as e:
+                print(f"添加记忆失败: {e}") 
         content=[message_to_role_content(msg)['content'] for msg in msgs if isinstance(msg, ToolMessage)]
         if len(content)==0:
             return 
         query=msgs[0].content
-        tool_name=msgs[1].additional_kwargs['tool_calls'][0]['function']['name']
-        if tool_name.endswith("_read_memory"):
-            return
-        content=content[0]
+        content=msgs[-1].content
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        data={"page_content":query,"metadata":{"output":content,"time":time,'tool_name':tool_name}}
-        with open(self.tmp_file, "a", encoding="utf-8") as f:
-            f.writelines(json.dumps(data,ensure_ascii=False) + "\n")
-        self.executor.submit(self.my_write)
+        data=[Document(page_content=query,metadata={"output":content,"time":time,"query":query})]
+        asyncio.run(task())
+  
 
         
 
@@ -341,47 +326,48 @@ class ProfileContext(Context):
         可用于在对话中注入个性化上下文。
         
         """
-        print ("读取用户画像")
+        #print ("读取用户画像")
         latest = self._get_latest_file(self.profile_dir)
         with open(latest, "r", encoding="utf-8") as f:
             profile = f.read()
-        return profile.strip()
+        return "用户画像是："+profile.strip()
     
-    def my_write(self,limit=5) -> None:
-        def count_lines(filename):
-            """返回文件的行数"""
-            with open(filename, 'r', encoding='utf-8') as f:
-                return sum(1 for _ in f)
-        if count_lines(self.tmp_file) >= limit:   
- 
-            with open(self.tmp_file, "r", encoding="utf-8") as f:
-                lines=f.readlines()
-            lines=[json.loads(line.strip())['content'] for line in lines if len(line.strip())>0]
-            content="\n".join(lines)
-            profile=llm.invoke(f"{content} 根据上述内容，总结出用户画像").content
-            latest = self._get_latest_file(self.profile_dir)
-            if latest and self._is_within_last_hour(latest):
-                target_file = latest
-            else:
-                target_file = self._new_file_path(self.profile_dir, prefix="profile")
-            with open(target_file,"w",encoding="utf-8") as f:
-                f.writelines(profile)
+   
 
-            # 清空临时文件
-            open(self.tmp_file, "w", encoding="utf-8").close()
+
 
     def write(self, messages, **kwargs) -> None: 
-        """写入或更新一个键值对。"""
- 
+        async def task() -> None:
+            limit=20
+            def count_lines(filename):
+                """返回文件的行数"""
+                with open(filename, 'r', encoding='utf-8') as f:
+                    return sum(1 for _ in f)
+            if count_lines(self.tmp_file) >= limit:   
+                with open(self.tmp_file, "r", encoding="utf-8") as f:
+                    lines=f.readlines()
+                lines=[json.loads(line.strip())['content'] for line in lines if len(line.strip())>0]
+                content="\n".join(lines)
+                profile=llm.invoke(f"{content} 根据上述内容，总结出用户画像").content
+                latest = self._get_latest_file(self.profile_dir)
+                if latest and self._is_within_last_hour(latest):
+                    target_file = latest
+                else:
+                    target_file = self._new_file_path(self.profile_dir, prefix="profile")
+                with open(target_file,"w",encoding="utf-8") as f:
+                    f.writelines(profile)
+                open(self.tmp_file, "w", encoding="utf-8").close()
+
         results=[ message_to_role_content(s) for s in messages]
         results=[ json.dumps(s,ensure_ascii=False) for s in results if s['role']=="user"]
         with open(self.tmp_file, "a", encoding="utf-8") as f:
             f.writelines("\n".join(results) + "\n")
-        self.executor.submit(self.my_write)
-
+        asyncio.run(task())
+ 
+        
 
 class DocumentContext(Context):
-    """用户画像上下文，存储用户属性信息。"""
+    """用户画上传文档"""
     
     def __init__(self, userid: str, agentid: str):
         super().__init__(userid, agentid)
@@ -394,7 +380,7 @@ class DocumentContext(Context):
         Args:
             query (str): 用于相似性搜索的查询字符串，通常为当前用户输入或需要匹配的关键信息。
         """
-        print ("读取个人知识库")
+        #print ("读取个人知识库")
         docs=self.vector_db.search(query,search_type="similarity",k=5)
         docs=[s.metadata["content"] for s in docs]
         results=text_rerank(query,docs,threshold=0.75)
@@ -435,6 +421,11 @@ class ContextManager:
 if __name__ == "__main__":
     agent_id="agent_001"
     user_id="user_123"
-    ctx=DocumentContext("user_123","agent_001")
-    result=ctx.read("小孩有些多动")
-    print (result)
+    ctx=ToolContext("user_123","agent_001")
+    result=ctx.read("北京的天气")
+    memory_plugin=["history","memory","tool","profile"]
+    context=ContextList(memory_plugin,agent_id,user_id)
+    background="背景信息是："
+    for ctx in context.ctx_list:
+        background+=ctx.read("你好，你在干什么呀")
+    print (background)

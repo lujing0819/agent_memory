@@ -42,30 +42,21 @@ class AutoMemoryAgent:
       
         self.messages = self.forget_func(self.messages)
         user_msg = HumanMessage(content=user_input)
-        #memory=self.memory_agent.invoke(user_msg)
+ 
    
         #memory=[ ctx.read(user_input) for ctx in self.context.ctx_list]
+        background="背景信息是："
         for ctx in self.context.ctx_list:
-            print (ctx.read(user_input))
-            print ("-"*10)
-            print ("\n\n")
-
+            background+=ctx.read(user_input)
 
         # 构建当前状态（包含历史消息）
-        current_state = {"messages": self.messages + [user_msg]}
+        current_state = {"messages": self.messages + [HumanMessage(content=background),user_msg]}
         # 调用原始 agent
         final_state = self.agent.invoke(current_state)
-        print (final_state)
+ 
         # 更新历史消息（含本次交互产生的全部消息）
         self.messages = final_state["messages"]
-
-        # safe, reason=self.guard.check(self.messages[-1].content)
-        # if not safe:
-        #     return f"输出不安全:{reason}"
-
-        # 获取本次新增的消息（即上次存储后到现在的所有新消息）
-        print (self.messages)
-        print (self.prev_msg_count)
+ 
         new_messages = self.messages[self.prev_msg_count:]
         # 存储新消息（假设 ctx_list.write 接受 BaseMessage 列表）
         self.context.write(new_messages)
